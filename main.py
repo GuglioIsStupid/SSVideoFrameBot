@@ -14,7 +14,7 @@ ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
 ACCESS_TOKEN_SECRET = os.getenv('ACCESS_TOKEN_SECRET')
 BEARER_TOKEN = os.getenv('BEARER_TOKEN')
 
-Client = tweepy.Client(
+client = tweepy.Client(
     consumer_key=CONSUMER_KEY,
     consumer_secret=CONSUMER_SECRET,
     access_token=ACCESS_TOKEN,
@@ -22,106 +22,99 @@ Client = tweepy.Client(
     bearer_token=BEARER_TOKEN
 )
 
-ClientAuth = tweepy.OAuthHandler(CONSUMER_KEY, CONSUMER_SECRET, ACCESS_TOKEN, ACCESS_TOKEN_SECRET)
-
-api = tweepy.API(ClientAuth)
+auth = tweepy.OAuth1UserHandler(
+    CONSUMER_KEY, CONSUMER_SECRET,
+    ACCESS_TOKEN, ACCESS_TOKEN_SECRET
+)
+api = tweepy.API(auth)
 
 try:
     api.verify_credentials()
     print("Authentication OK")
-except:
-    print("Error during authentication")
+except Exception as e:
+    print("Error during authentication:", e)
     sys.exit(1)
 
-video_dir = "videos/"
-
-tmpimg = "tmpimg.jpg"
-tmpvid = "tmpvid.mp4"
+video_dir = os.path.join(scriptpath, "videos")
+tmpimg = os.path.join(scriptpath, "tmpimg.jpg")
+tmpvid = os.path.join(scriptpath, "tmpvid.mp4")
 
 max_attempts = 10
-current_attempts = 0
 
 def getVideo():
-    # return a video path
-    video = random.choice(os.listdir(video_dir))
-    return scriptpath + "/" + video_dir + video, video.split(".")[0]
+    video_file = random.choice([f for f in os.listdir(video_dir) if f.lower().endswith((".mp4", ".mov", ".mkv"))])
+    return os.path.join(video_dir, video_file), os.path.splitext(video_file)[0]
 
-def getDuration(video):
-    # return the duration of a video
+def getDuration(video_path):
     cmd = [
-        "ffprobe",
-        "-i", video,
+        "ffprobe", "-i", video_path,
         "-show_entries", "format=duration",
         "-v", "quiet",
-        "-of", "csv=%s" % ("p=0")
+        "-of", "csv=p=0"
     ]
-    #print(" ".join(cmd))
+    return float(subprocess.check_output(cmd).decode().strip())
 
-    return float(subprocess.check_output(cmd))
-
-def getRandomScreenshot(video, duration):
-    # return a random screenshot from a video
-    screenshot = random.uniform(0, duration)
+def getRandomScreenshot(video_path, duration):
+    screenshot_time = random.uniform(0, duration)
     cmd = [
-        "ffmpeg",
-        "-ss", str(screenshot),
-        "-i", video,
+        "ffmpeg", "-y",
+        "-ss", str(screenshot_time),
+        "-i", video_path,
         "-vframes", "1",
         "-q:v", "2",
         tmpimg
     ]
-    #print(" ".join(cmd))
     subprocess.check_output(cmd)
     return tmpimg
 
-def getRandomVideoClip(video, duration, clipLength):
-    # clips vary from 5-15 seconds
-    clipStart = random.uniform(0, duration - clipLength)
+def getRandomVideoClip(video_path, duration, clipLength):
+    start_time = random.uniform(0, max(0, duration - clipLength))
     cmd = [
-        "ffmpeg",
-        "-ss", str(clipStart),
-        "-i", video,
+        "ffmpeg", "-y",
+        "-ss", str(start_time),
+        "-i", video_path,
         "-t", str(clipLength),
         "-c", "copy",
         tmpvid
     ]
-    #print(" ".join(cmd))
     subprocess.check_output(cmd)
     return tmpvid
 
 timer = 1800.0
-# one hour max
 maxTimer = 1800.0
+current_attempts = 0
+
 while True:
     timer += 1.0
-    # should post ss?
     if timer >= maxTimer:
         timer = 0.0
-        video, videoName = getVideo()
-        duration = getDuration(video)
-        #50/50 chance for screenshot or video clip
+        video_path, video_name = getVideo()
+        duration = getDuration(video_path)
+
         while True:
             try:
-                screenshot = random.randint(0, 1) == 0 and getRandomScreenshot(video, duration) or getRandomVideoClip(video, duration, random.uniform(5.0, 15.0))
-                mediaID = api.media_upload(screenshot)
-                Client.create_tweet(
-                    text = videoName,
-                    media_ids = [mediaID.media_id]
+                if random.randint(0, 1) == 0:
+                    media_file = getRandomScreenshot(video_path, duration)
+                    media_id = api.media_upload(media_file).media_id
+                else:
+                    media_file = getRandomVideoClip(video_path, duration, random.uniform(5, 15))
+                    media_id = api.media_upload(media_file, media_category='tweet_video').media_id
+
+                client.create_tweet(
+                    text=video_name,
+                    media_ids=[media_id]
                 )
                 break
             except Exception as e:
-                print("Error: ", e)
+                print("Error:", e)
                 current_attempts += 1
-                print("Attempt: ", current_attempts)
-                if current_attempts == max_attempts:
-                    print("Max attempts reached. Waiting for next tweet.")
+                print(f"Attempt {current_attempts}/{max_attempts}")
+                if current_attempts >= max_attempts:
+                    print("Max attempts reached. Skipping this tweet.")
                     break
-                continue
+
         current_attempts = 0
+        if os.path.exists(media_file):
+            os.remove(media_file)
 
-                    
-        # delete the screenshot
-        os.remove(screenshot)
-
-    # sleep for 1 second
-    time.sleep(1.0)
+    time.sleep(1)
